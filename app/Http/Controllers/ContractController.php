@@ -264,6 +264,36 @@ class ContractController extends Controller
             'data' => $this->toApi($contract->fresh(['user', 'admin'])),
         ]);
     }
+    
+      public function updatePaymentReceipt(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        $contract = Contract::with('user')->findOrFail($id);
+
+        if (! $this->isAdmin($user) && $contract->user_id !== $user->id) {
+            return response()->json(['success' => false, 'message' => 'Forbidden.'], 403);
+        }
+
+        $validated = $request->validate([
+            'payment_receipt' => 'required|file|mimes:pdf,jpg,jpeg,png,webp|max:10240',
+        ]);
+
+        $file = $validated['payment_receipt'];
+        $path = $file->store('contracts/payment-receipts', 'public');
+Log::info('Payment receipt updated', [
+    'contract_id' => $contract->id,
+    'path' => $path,
+]);
+        // $contract->update([
+        //     'payment_receipt_path' => $path,
+        // ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Payment receipt updated.',
+            'data' => $this->toApi($contract->fresh(['user', 'admin'])),
+        ]);
+    }
 
     protected function isAdmin(?User $user): bool
     {

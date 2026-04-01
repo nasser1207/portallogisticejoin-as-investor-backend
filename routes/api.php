@@ -31,6 +31,8 @@ Route::middleware('auth.token')->group(function () {
     Route::get('portallogistice/contracts', [ContractController::class, 'index']);
     Route::get('portallogistice/contracts/{id}', [ContractController::class, 'show']);
     Route::post('portallogistice/contracts/{id}/nafath', [ContractController::class, 'nafath']);
+        Route::post('portallogistice/contracts/{id}/payment-receipt', [ContractController::class, 'updatePaymentReceipt']);
+
 });
 
 Route::middleware(['auth.token', 'admin'])->group(function () {
