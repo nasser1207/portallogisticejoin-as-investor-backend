@@ -2,32 +2,37 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Contract;
 use App\Models\SadqNafathRequest;
-use App\Services\SadqService;
+use App\Services\NafathSigningPipeline;
+use App\Services\SignableRegistry;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 
+/**
+ * Receives Sadq/Nafath webhook callbacks.
+ *
+ * This controller is now entity-agnostic: it does not import Contract or
+ * InvestorRequest. It delegates all model-level work to the pipeline + registry.
+ *
+ * Adding a new signable type in the future = zero changes here.
+ */
 class SadqWebhookController extends Controller
 {
     public function __construct(
-        protected SadqService $sadqService
+        private readonly SignableRegistry     $registry,
+        private readonly NafathSigningPipeline $pipeline
     ) {}
 
     public function handle(Request $request): JsonResponse
     {
-        $payload   = $request->all();
-        $sourceIp  = (string) $request->ip();
+        $payload  = $request->all();
+        $sourceIp = (string) $request->ip();
 
-        Log::info('Sadq webhook received', [
-            'ip'      => $sourceIp,
-            'payload' => $payload,
-        ]);
+        Log::info('Sadq webhook received', ['ip' => $sourceIp, 'payload' => $payload]);
 
         if (! $this->isAuthorizedWebhook($request)) {
-            Log::warning('Sadq webhook unauthorized source', ['ip' => $sourceIp]);
+            Log::warning('Sadq webhook unauthorized', ['ip' => $sourceIp]);
             return response()->json(['success' => false, 'message' => 'Unauthorized webhook source.'], 401);
         }
 
@@ -37,7 +42,6 @@ class SadqWebhookController extends Controller
         Log::info('Sadq webhook parsed', [
             'request_id' => $requestId,
             'status'     => $status,
-            'raw_status' => data_get($payload, 'Status', data_get($payload, 'status')),
         ]);
 
         if ($requestId === null || $requestId === '') {
@@ -45,8 +49,41 @@ class SadqWebhookController extends Controller
             return response()->json(['success' => true]);
         }
 
-        // Update or create the Nafath request record
+        // ── Persist the raw webhook event ─────────────────────────────────────
+        $this->upsertNafathRecord($requestId, $status, $payload);
+
+        // ── Resolve the Signable entity (contract, investor_request, etc.) ────
+        $signable = $this->registry->resolve($requestId);
+
+        if ($signable === null) {
+            Log::warning('Sadq webhook: no entity found for reference', ['request_id' => $requestId]);
+            return response()->json(['success' => true]);
+        }
+
+        Log::info('Sadq webhook: entity resolved', [
+            'type'   => $signable->getSignableType(),
+            'id'     => $signable->getSignableId(),
+            'status' => $status,
+        ]);
+
+        // ── Dispatch to the pipeline ──────────────────────────────────────────
+        match ($status) {
+            SadqNafathRequest::STATUS_APPROVED => $this->pipeline->handleApproved($signable, $requestId),
+            SadqNafathRequest::STATUS_REJECTED => $this->pipeline->handleRejected($signable),
+            default                            => null, // pending — no action needed
+        };
+
+        Log::info('Sadq webhook processed', ['request_id' => $requestId, 'status' => $status]);
+
+        return response()->json(['success' => true]);
+    }
+
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+    private function upsertNafathRecord(string $requestId, string $status, array $payload): void
+    {
         $record = SadqNafathRequest::where('request_id', $requestId)->first();
+
         if ($record) {
             $record->update([
                 'status'       => $status,
@@ -68,96 +105,13 @@ class SadqWebhookController extends Controller
                 ],
             ]);
         }
-
-        // Find matching contract
-        $contract = Contract::where('nafath_reference', $requestId)->first();
-
-        if (! $contract) {
-            Log::warning('Sadq webhook: contract not found', ['request_id' => $requestId]);
-            return response()->json(['success' => true]);
-        }
-
-        Log::info('Sadq webhook contract matched', [
-            'contract_id'    => $contract->id,
-            'current_status' => $contract->status,
-        ]);
-
-        $fromStatus = $contract->status;
-
-        if ($status === SadqNafathRequest::STATUS_APPROVED) {
-
-            $contract->update(['status' => 'nafath_approved']);
-
-            // Try to sign the document if a file exists
-           if (! empty($contract->file_path)) {
-    // 1. Clean the path and define the REAL location on your server
-    $cleanPath    = trim($contract->file_path); 
-    $absolutePath = "/home/portallogist/public_html/portallogistice/build/storage/" . $cleanPath;
-    $fileName     = basename($cleanPath);
-
-    Log::info('Phase 4: Starting Auto-Sign', [
-        'contract_id' => $contract->id,
-        'path'        => $absolutePath,
-    ]);
-
-    try {
-        // We use the absolute path to READ the file for Sadq
-        $signResult = $this->sadqService->signDocument($requestId, $absolutePath, $fileName);
-
-        if ($signResult['success'] && ! empty($signResult['signed_base64'])) {
-            $decodedPdf = base64_decode($signResult['signed_base64']);
-            
-            // We use the SAME absolute path to WRITE the signed PDF back
-            if (file_put_contents($absolutePath, $decodedPdf) !== false) {
-                Log::info('Phase 4: Signed PDF successfully overwritten', [
-                    'contract_id' => $contract->id,
-                    'path'        => $absolutePath
-                ]);
-            } else {
-                Log::error('Phase 4: Save failed. Check folder permissions.', ['path' => $absolutePath]);
-            }
-        } else {
-            Log::error('Phase 4: Sadq signing failed', [
-                'message' => $signResult['message'] ?? 'Unknown error'
-            ]);
-        }
-    } catch (\Throwable $e) {
-        Log::error('Phase 4: Critical Exception', ['error' => $e->getMessage()]);
-    }
-}
-            else {
-                Log::info('Phase 4: No file to sign, skipping signing step', [
-                    'contract_id' => $contract->id,
-                ]);
-            }
-
-            // Always move to admin_pending after Nafath approval (with or without signing)
-            $contract->update(['status' => 'admin_pending']);
-
-        } elseif ($status === SadqNafathRequest::STATUS_REJECTED) {
-            // Reset to sent so user can try Nafath again
-            $contract->update(['status' => 'sent']);
-
-        } else {
-            $contract->update(['status' => 'nafath_pending']);
-        }
-
-        $toStatus = $contract->fresh()->status;
-        Log::info('Sadq webhook contract status change', [
-            'contract_id' => $contract->id,
-            'from_status' => $fromStatus,
-            'to_status'   => $toStatus,
-        ]);
-
-        Log::info('Sadq webhook processed', ['request_id' => $requestId, 'status' => $status]);
-
-        return response()->json(['success' => true]);
     }
 
     protected function isAuthorizedWebhook(Request $request): bool
     {
         $allowedRaw = (string) config('services.sadq.webhook_ip_whitelist', '');
         $allowedIps = array_values(array_filter(array_map('trim', explode(',', $allowedRaw))));
+
         if ($allowedIps !== [] && ! in_array((string) $request->ip(), $allowedIps, true)) {
             return false;
         }
