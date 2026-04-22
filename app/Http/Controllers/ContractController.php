@@ -45,7 +45,6 @@ class ContractController extends Controller
                 $query->where('status', $status);
             }
         }
-
         if ($type !== '') {
             $query->where('type', $type);
         }
@@ -53,11 +52,68 @@ class ContractController extends Controller
         if ($this->isAdmin($user) && $userId > 0) {
             $query->where('user_id', $userId);
         }
+        $statsQuery = clone $query;
+
+        $today    = now()->toDateString();
+        $this_month = now()->subDays(30)->toDateString();
+        $this_week = now()->subDays(7)->toDateString();
+
+        $all_contracts = $statsQuery->get();
+
+        $total_count = $all_contracts->count();
+        $admin_pending_count = $all_contracts->where('status', Contract::STATUS_ADMIN_PENDING)->count();
+        $need_to_pay_count = $all_contracts->where('status', Contract::STATUS_NEED_TO_PAY)->count();
+        $approved_count = $all_contracts->where('status', Contract::STATUS_APPROVED)->count();
+        $rejected_count = $all_contracts->where('status', Contract::STATUS_REJECTED)->count();
+
+
+
+        // This month
+        $this_month_contracts = $all_contracts->filter(fn (Contract $c) => $c->created_at?->gte($this_month));
+$total_count_this_month = $this_month_contracts->count();
+$admin_pending_count_this_month = $this_month_contracts->where('status', Contract::STATUS_ADMIN_PENDING)->count();
+$need_to_pay_count_this_month = $this_month_contracts->where('status', Contract::STATUS_NEED_TO_PAY)->count();
+$approved_count_this_month = $this_month_contracts->where('status', Contract::STATUS_APPROVED)->count();
+$rejected_count_this_month = $this_month_contracts->where('status', Contract::STATUS_REJECTED)->count();
+
+        // This week
+        $this_week_contracts = $all_contracts->filter(fn (Contract $c) => $c->created_at?->gte($this_week));
+$total_count_this_week = $this_week_contracts->count();
+$admin_pending_count_this_week = $this_week_contracts->where('status', Contract::STATUS_ADMIN_PENDING)->count();
+$need_to_pay_count_this_week = $this_week_contracts->where('status', Contract::STATUS_NEED_TO_PAY)->count();
+$approved_count_this_week = $this_week_contracts->where('status', Contract::STATUS_APPROVED)->count();
+$rejected_count_this_week = $this_week_contracts->where('status', Contract::STATUS_REJECTED)->count();
 
         return response()->json([
             'success' => true,
             'data'    => $query->get()->map(fn (Contract $c) => $this->toApi($c)),
-        ]);
+            'summary' => [
+                'all_time' => [    
+                    'total_count' => $total_count,
+                    'admin_pending_count' => $admin_pending_count,
+              'need_to_pay_count' => $need_to_pay_count,
+              'approved_count' => $approved_count,
+              'rejected_count' => $rejected_count,
+            ],
+                'this_month' => [
+                    'total_count' => $total_count_this_month,
+                    'admin_pending_count' => $admin_pending_count_this_month,
+              'need_to_pay_count' => $need_to_pay_count_this_month,
+              'approved_count' => $approved_count_this_month,
+              'rejected_count' => $rejected_count_this_month,
+                
+                ],
+                'this_week' => [
+                    'total_count' => $total_count_this_week,
+                    'admin_pending_count' => $admin_pending_count_this_week,
+              'need_to_pay_count' => $need_to_pay_count_this_week,
+              'approved_count' => $approved_count_this_week,
+              'rejected_count' => $rejected_count_this_week,
+                ],
+            ],
+            ],
+          
+        );
     }
 
     // ── show ──────────────────────────────────────────────────────────────────

@@ -155,12 +155,48 @@ class InvoiceController extends Controller
             $query->whereDate('due_date', '<=', $to);
         }
 
+        // ── Summary stats — cloned from the same filtered query (no pagination) ─
+        $allInvoices  = (clone $query)->get();
+        $sevenDaysAgo = now()->subDays(7)->startOfDay();
+
+        $summary = [
+            'count_pending'       => $allInvoices->where('status', Invoice::STATUS_PENDING)->count(),
+            'count_admin_pending' => $allInvoices->where('status', Invoice::STATUS_ADMIN_PENDING)->count(),
+            'count_approved'      => $allInvoices->where('status', Invoice::STATUS_APPROVED)->count(),
+            'count_rejected'      => $allInvoices->where('status', Invoice::STATUS_REJECTED)->count(),
+            'total_amount'        => (float) $allInvoices->sum('amount'),
+
+            // Pending invoices (awaiting user payment) created in the last 7 days
+            'pending_last_7_days' => (function () use ($allInvoices, $sevenDaysAgo) {
+                $slice = $allInvoices
+                    ->where('status', Invoice::STATUS_PENDING)
+                    ->filter(fn (Invoice $i) => $i->created_at && $i->created_at->gte($sevenDaysAgo));
+                return [
+                    'count'        => $slice->count(),
+                    'total_amount' => (float) $slice->sum('amount'),
+                ];
+            })(),
+
+            // Approved invoices in the last 7 days
+            'approved_last_7_days' => (function () use ($allInvoices, $sevenDaysAgo) {
+                $slice = $allInvoices
+                    ->where('status', Invoice::STATUS_APPROVED)
+                    ->filter(fn (Invoice $i) => $i->updated_at && $i->updated_at->gte($sevenDaysAgo));
+                return [
+                    'count'        => $slice->count(),
+                    'total_amount' => (float) $slice->sum('amount'),
+                ];
+            })(),
+        ];
+        // ─────────────────────────────────────────────────────────────────────────
+
         $perPage   = min((int) $request->query('per_page', 50), 200);
         $paginated = $query->paginate($perPage);
 
         return response()->json([
             'success' => true,
             'data'    => [
+                'summary'    => $summary,
                 'invoices'   => $paginated->map(fn (Invoice $i) => $this->toApiWithRelations($i)),
                 'pagination' => [
                     'total'        => $paginated->total(),
