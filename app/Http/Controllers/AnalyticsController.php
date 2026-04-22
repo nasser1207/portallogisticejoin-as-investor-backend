@@ -60,14 +60,14 @@ class AnalyticsController extends Controller
             'data'    => [
                 'total_contracts'   => $contracts->count(),
                 'active_contracts'  => $contracts->filter(fn ($c) => $c->isActivated())->count(),
-                'pending_contracts' => Contract::where('user_id', $user->id)
+                'pending_contracts' => Contract::where('user_id', $user->id)->where('type', Contract::TYPE_RENTAL)
                     ->whereIn('status', [
                         Contract::STATUS_SENT,
                         Contract::STATUS_NAFATH_PENDING,
                         Contract::STATUS_NAFATH_APPROVED,
                         Contract::STATUS_ADMIN_PENDING,
                     ])->count(),
-                'total_invested'    => $contracts->sum('monthly_payment_amount') *12,
+                'total_invested'    => $contracts->sum('total_amount'),
                 'total_received'    => $totalReceived,
                 'pending_payments'  => $totalPending,
                 'completion_rate'   => $completionRate,
